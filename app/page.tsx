@@ -166,7 +166,7 @@ function Sidebar({
   ];
 
   return (
-    <aside className="hidden min-h-screen w-72 flex-col border-r bg-white p-5 md:flex">
+    <aside className="flex min-h-screen w-72 flex-col border-r bg-white p-5">
       <div className="mb-8 flex items-center gap-3">
         <div className="rounded-2xl bg-slate-900 p-3 text-white">
           <ShieldCheck size={22} />

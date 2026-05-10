@@ -152,10 +152,14 @@ function Sidebar({
   activePage,
   setActivePage,
   onLogout,
+  mobileOpen = false,
+  onCloseMobile,
 }: {
   activePage: Page;
   setActivePage: (page: Page) => void;
   onLogout: () => void;
+  mobileOpen?: boolean;
+  onCloseMobile?: () => void;
 }) {
   const navItems = [
     { id: 'dashboard' as Page, label: 'Dashboard', icon: LayoutDashboard },
@@ -166,8 +170,12 @@ function Sidebar({
   ];
 
   return (
-    <aside className="flex min-h-screen w-72 flex-col border-r bg-white p-5">
-      <div className="mb-8 flex items-center gap-3">
+    <aside
+  className={`fixed inset-y-0 left-0 z-50 w-72 flex-col border-r bg-white p-5 shadow-xl transition-transform md:static md:flex md:min-h-screen md:translate-x-0 md:shadow-none ${
+    mobileOpen ? 'flex translate-x-0' : 'hidden -translate-x-full md:flex'
+  }`}
+>
+      <div className="mb-8 flex items-center justify-between gap-3">
         <div className="rounded-2xl bg-slate-900 p-3 text-white">
           <ShieldCheck size={22} />
         </div>
@@ -175,6 +183,15 @@ function Sidebar({
           <h1 className="text-lg font-bold">Estimate App</h1>
           <p className="text-sm text-slate-500">Web starter</p>
         </div>
+
+        <button
+  onClick={onCloseMobile}
+  className="rounded-xl border px-3 py-2 text-sm md:hidden"
+>
+  ✕
+</button>
+
+
       </div>
 
       <nav className="space-y-2">
@@ -185,7 +202,10 @@ function Sidebar({
           return (
             <button
               key={item.id}
-              onClick={() => setActivePage(item.id)}
+              onClick={() => {
+  setActivePage(item.id);
+  onCloseMobile?.();
+}}
               className={`flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-medium transition ${active ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'
                 }`}
             >
@@ -701,7 +721,7 @@ const [manualVerticalMm, setManualVerticalMm] = useState(0);
   const planScrollRef = useRef<HTMLDivElement | null>(null);
   const renderTaskRef = useRef<any>(null);
   const zoomTimerRef = useRef<any>(null);
-
+const takeoffSaveTimerRef = useRef<any>(null);
   const [uploadedPlans, setUploadedPlans] = useState<any[]>([]);
 
   const [sections, setSections] = useState<any[]>(defaultSections);
@@ -764,6 +784,7 @@ const [takeoffColor, setTakeoffColor] = useState('#ef4444');
 const deductColor = '#374151';
 const [takeoffColorOpen, setTakeoffColorOpen] = useState(false);
 const [takeoffShapes, setTakeoffShapes] = useState<any[]>([]);
+const [loadingTakeoffShapes, setLoadingTakeoffShapes] = useState(false);
 const [currentPolygonPoints, setCurrentPolygonPoints] = useState<{ x: number; y: number }[]>([]);
 const [currentLineStart, setCurrentLineStart] = useState<{ x: number; y: number } | null>(null);
 const [currentRectangleStart, setCurrentRectangleStart] = useState<{ x: number; y: number } | null>(null);
@@ -847,6 +868,15 @@ function goToNextPlan() {
   useEffect(() => {
     localStorage.setItem('estimateSections', JSON.stringify(sections));
   }, [sections]);
+
+useEffect(() => {
+  if (!takeoffOpen) return;
+  if (!activeTakeoffTarget) return;
+  if (!selectedPlanId) return;
+
+  scheduleTakeoffAutosave();
+}, [takeoffShapes]);
+
 
   function lineTotal(item: any) {
     return toNumber(item.quantity) * toNumber(item.unitPrice);
@@ -1168,6 +1198,9 @@ setPlanZoom(1);
 setTakeoffShapes([]);
   setCurrentPolygonPoints([]);
   setTakeoffOpen(true);
+  setTimeout(() => {
+  loadTakeoffDrawing();
+}, 50);
 
   if ((item.unit || '').toLowerCase() === 'm2') {
     setTakeoffTool('polygon');
@@ -1877,6 +1910,52 @@ function smoothSetPlanZoom(nextZoom: number) {
   }, 80);
 }
 
+
+function moveTakeoffShape(shape: any, dx: number, dy: number) {
+  if (shape.type === 'point') {
+    return {
+      ...shape,
+      x: shape.x + dx,
+      y: shape.y + dy,
+    };
+  }
+
+  if (
+    shape.type === 'line' ||
+    shape.type === 'rectangle' ||
+    shape.type === 'ellipse' ||
+    shape.type === 'deduct-rectangle' ||
+    shape.type === 'deduct-ellipse'
+  ) {
+    return {
+      ...shape,
+      start: {
+        x: shape.start.x + dx,
+        y: shape.start.y + dy,
+      },
+      end: {
+        x: shape.end.x + dx,
+        y: shape.end.y + dy,
+      },
+    };
+  }
+
+  if (shape.type === 'polygon' || shape.type === 'deduct-polygon') {
+    return {
+      ...shape,
+      points: shape.points.map((p: any) => ({
+        x: p.x + dx,
+        y: p.y + dy,
+      })),
+    };
+  }
+
+  return shape;
+}
+
+
+
+
 function calculateTakeoffQuantity() {
   const unit = activeTakeoffTarget?.unit?.toLowerCase();
 
@@ -1935,8 +2014,78 @@ async function autoSaveProgress() {
   await saveEstimate(false);
 }
 
+async function saveTakeoffDrawing() {
+  if (
+    !project?.id ||
+    !activeTakeoffTarget ||
+    !selectedPlanId
+  ) {
+    return;
+  }
 
-function applyTakeoffQuantity() {
+  const payload = {
+    project_id: project.id,
+    section_id: activeTakeoffTarget.sectionId,
+    item_id: activeTakeoffTarget.itemId,
+    plan_id: selectedPlanId,
+    shapes: takeoffShapes,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase
+    .from('takeoff_drawings')
+    .upsert(payload, {
+      onConflict: 'project_id,section_id,item_id,plan_id',
+    });
+
+  if (error) {
+    console.error(error);
+  }
+}
+
+async function loadTakeoffDrawing() {
+  if (
+    !project?.id ||
+    !activeTakeoffTarget ||
+    !selectedPlanId
+  ) {
+    return;
+  }
+
+  setLoadingTakeoffShapes(true);
+
+  const { data, error } = await supabase
+    .from('takeoff_drawings')
+    .select('shapes')
+    .eq('project_id', project.id)
+    .eq('section_id', activeTakeoffTarget.sectionId)
+    .eq('item_id', activeTakeoffTarget.itemId)
+    .eq('plan_id', selectedPlanId)
+    .maybeSingle();
+
+  if (error) {
+    console.error(error);
+    setLoadingTakeoffShapes(false);
+    return;
+  }
+
+  setTakeoffShapes(data?.shapes || []);
+  setLoadingTakeoffShapes(false);
+}
+
+
+function scheduleTakeoffAutosave() {
+  if (takeoffSaveTimerRef.current) {
+    clearTimeout(takeoffSaveTimerRef.current);
+  }
+
+  takeoffSaveTimerRef.current = setTimeout(() => {
+    saveTakeoffDrawing();
+  }, 700);
+}
+
+
+async function applyTakeoffQuantity() {
   if (!activeTakeoffTarget) return;
 
   const qty = Number(calculateTakeoffQuantity().toFixed(2));
@@ -1948,7 +2097,8 @@ function applyTakeoffQuantity() {
     qty
   );
 
-  setTakeoffOpen(false);
+  await saveTakeoffDrawing();
+setTakeoffOpen(false);
   setEstimateTab('costings');
 }
 
@@ -2994,7 +3144,10 @@ setEditingItemId(null);
   </button>
 
         <button
-          onClick={() => setTakeoffOpen(false)}
+          onClick={async () => {
+  await saveTakeoffDrawing();
+  setTakeoffOpen(false);
+}}
           className="rounded border px-3 py-2"
         >
           ✕
@@ -4042,6 +4195,7 @@ return null;
                     key={plan.id}
                     onClick={() => {
                       setSelectedPlanId(plan.id);
+                      setTakeoffShapes([]);
                       setPlanZoom(1);
                       setMeasureMode(false);
                       setIsMeasuring(false);
@@ -4637,6 +4791,7 @@ export default function Home() {
     const [isLoggedIn, setIsLoggedIn] = useState(false);
     const [activePage, setActivePage] = useState<Page>('dashboard');
     const [loading, setLoading] = useState(true);
+    const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
     const [selectedProject, setSelectedProject] = useState<any>(null);
 
     useEffect(() => {
@@ -4675,10 +4830,26 @@ export default function Home() {
       <div className="min-h-screen bg-slate-100 text-slate-900">
         <div className="flex">
           <Sidebar
-            activePage={activePage}
-            setActivePage={setActivePage}
-            onLogout={handleLogout}
-          />
+  activePage={activePage}
+  setActivePage={setActivePage}
+  onLogout={handleLogout}
+  mobileOpen={mobileMenuOpen}
+  onCloseMobile={() => setMobileMenuOpen(false)}
+/>
+
+{mobileMenuOpen && (
+  <button
+    onClick={() => setMobileMenuOpen(false)}
+    className="fixed inset-0 z-40 bg-black/30 md:hidden"
+  />
+)}
+
+<button
+  onClick={() => setMobileMenuOpen(true)}
+  className="mb-4 rounded-xl border bg-white px-4 py-2 text-sm font-medium md:hidden"
+>
+  ☰ Menu
+</button>
 
           <main className="w-full p-5 md:p-8">
             {activePage === 'dashboard' && <Dashboard />}
